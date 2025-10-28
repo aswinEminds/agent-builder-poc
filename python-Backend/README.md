@@ -1,6 +1,4 @@
-Here is a complete README file for your project, based on the *synchronous* FastAPI service we built (before the `async` step).
 
------
 
 # Dynamic LangGraph Agent Service
 
