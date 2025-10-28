@@ -1,0 +1,9 @@
+httpx 
+python-dotenv
+yfinance
+fastapi 
+uvicorn
+pydantic
+openai
+langgraph
+groq

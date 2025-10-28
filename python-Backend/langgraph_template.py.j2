@@ -1,0 +1,146 @@
+{# langgraph_template_v7.py.j2 - generates an agent from graph-data JSON #}
+from typing import Annotated, TypedDict
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+import os
+from dotenv import load_dotenv
+
+# ----- Hardcoded Base Imports -----
+from llm_factory.chat_models import init_chat_model
+from langgraph.prebuilt import ToolNode
+from langgraph.graph import StateGraph, MessagesState, START, END
+# ----- ---------------------- -----
+
+# ----- Set API Keys -----
+{% if metadata.tool_api_keys -%}
+{% for key, value in metadata.tool_api_keys.items() %}
+os.environ["{{ key }}"] = "{{ value }}"
+{%- endfor %}
+{% endif %}
+# ----- ---------------- -----
+
+# ----- Additional Imports from JSON -----
+{%- for imp in metadata.imports | unique %}
+{{ imp }}
+{%- endfor %}
+{# --- Find key nodes for setup --- #}
+{% set agent_node = (nodes | selectattr('type', 'equalto', 'agent') | first) -%}
+{% set llm_node = agent_node -%}
+{% set entry_node = agent_node -%}
+{% set tool_executor = (nodes | selectattr('type', 'equalto', 'tool_executor') | first) -%}
+
+# ----- Function Definitions (Tools, Nodes, Conditions) -----
+
+# ----- Function Definitions (Tools, Nodes, Conditions) -----
+
+# Base Tool Functions (e.g., api_request)
+{%- for code_block in metadata.base_tool_code_blocks %}
+{{ code_block }}
+{%- endfor %}
+
+# Wrapper/Normal Tool Functions
+{# This will now find any node with code (tool_function, tavily, etc) #}
+{%- for func_node in nodes if func_node.data.code %}
+{{ func_node.data.code }}
+{%- endfor %}
+
+# Node Functions
+{{ llm_node.data.code_logic }}
+
+# Condition Functions
+{%- for func in metadata.function_definitions %}
+{% if func.type == 'condition' %}
+{{ func.code }}
+{%- endif %}
+{%- endfor %}
+
+# ----- llm init (from JSON) -----
+{# Create a new dictionary, passing *only* the required LLM params #}
+{% set llm_params = {
+    'provider': llm_node.data.provider,
+    'model': llm_node.data.model,
+    'API_key': llm_node.data.API_key
+} %}
+
+{# Add Azure-specific fields *only* if the provider is Azure #}
+{% if llm_node.data.provider == 'Azure' %}
+{% set _ = llm_params.update({
+    'API_Version': llm_node.data.API_Version,
+    'Azure_Endpoint': llm_node.data.Azure_Endpoint
+}) %}
+{% endif %}
+
+model = init_chat_model(**{{ llm_params | tojson }})
+# ----- State Definition -----
+{% if metadata.state.type == 'prebuilt' -%}
+StateClass = {{ metadata.state.name }}
+{% else -%}
+class {{ metadata.state.name }}(TypedDict):
+{%- for fld in metadata.state.fields %}
+    {{ fld.name }}: {{ fld.type }}
+{%- endfor %}
+StateClass = {{ metadata.state.name }}
+{%- endif %}
+
+# ----- Graph builder -----
+graph_builder = StateGraph(StateClass)
+
+# ----- Instantiate tool(s) -----
+tools = [
+{%- for node in nodes if node.data.function_name %}
+    {{ node.data.function_name }}{% if not loop.last %},{% endif %}
+{%- endfor %}
+]
+
+# ----- Bind LLM with tools -----
+model_with_tools = model.bind_tools(tools)
+
+# ----- Add nodes to graph -----
+# LLM Node
+graph_builder.add_node("{{ llm_node.id }}", agent)
+
+# Tool Executor Node
+tool_node = ToolNode(tools=tools)
+graph_builder.add_node("{{ tool_executor.id }}", tool_node)
+
+# ----- Add edges -----
+# Entry Point
+graph_builder.add_edge(START, "{{ entry_node.id }}")
+
+# Graph Edges
+{%- for edge in edges %}
+{% if edge.type == "conditional" %}
+graph_builder.add_conditional_edges(
+    "{{ edge.source }}",
+    {{ edge.condition }},
+    # This uses the simple list format from your desired code
+    ["{{ edge.target}}", END] 
+)
+{% elif edge.type == "simple" %}
+graph_builder.add_edge("{{ edge.source }}", "{{ edge.target }}")
+{%- endif %}
+{%- endfor %}
+
+# ----- Compile graph -----
+graph = graph_builder.compile()
+
+# ----- Simple CLI runner for quick test -----
+def run_cli():
+    while True:
+        msg = input("User: ")
+        if msg.lower() in ('exit', 'quit'):
+            break
+        
+        state = {"messages": [{"role": "user", "content": msg}]}
+        out = graph.invoke(state)
+        
+        try:
+            last = out["messages"][-1]
+            print("Assistant:", getattr(last, "content", last))
+        except Exception:
+            print("Assistant (raw):", out)
+
+
+if __name__ == "__main__":
+    load_dotenv()
+    run_cli()
